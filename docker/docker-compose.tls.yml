@@ -1,0 +1,55 @@
+version: "3.8"
+
+services:
+  # TLS Server using OQS nginx with PQC certificates
+  pqc-server:
+    image: openquantumsafe/nginx:latest
+    container_name: pqc-server
+    ports:
+      - "4433:4433"
+    volumes:
+      - ./scripts/gen_certs.sh:/opt/scripts/gen_certs.sh
+      - certs:/opt/certs
+    entrypoint: |
+      bash -c "
+        /opt/scripts/gen_certs.sh ML-DSA-65 /opt/certs &&
+        nginx -g 'daemon off;' -c /etc/nginx/nginx.conf
+      "
+    networks:
+      - pqc-net
+
+  # Benchmark client
+  pqc-bench:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.base
+    container_name: pqc-bench
+    depends_on:
+      - pqc-server
+    volumes:
+      - certs:/opt/certs:ro
+      - results:/opt/pqc/results
+    environment:
+      - PQC_SERVER_HOST=pqc-server
+      - LD_LIBRARY_PATH=/opt/oqs/lib
+      - OPENSSL_MODULES=/opt/oqs/lib/ossl-modules
+    entrypoint: |
+      bash -c "
+        echo 'Waiting for server...' &&
+        sleep 3 &&
+        echo 'Listing available algorithms:' &&
+        pqc_list_algs &&
+        echo '' &&
+        echo 'Running TLS benchmark against pqc-server:4433...' &&
+        pqc_bench_tls --kem ML-KEM-768 --sig ML-DSA-65 --host pqc-server --port 4433 --iterations 50 --format json --output /opt/pqc/results/tls_results.json
+      "
+    networks:
+      - pqc-net
+
+volumes:
+  certs:
+  results:
+
+networks:
+  pqc-net:
+    driver: bridge

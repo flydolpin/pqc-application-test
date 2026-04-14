@@ -1,0 +1,17 @@
+# NIST Security Level 1 (~128-bit equivalent) algorithm combinations
+
+kem_algorithms = [
+    "ML-KEM-512",
+    "Kyber512",
+    "p256_kyber512",
+    "FrodoKEM-640-SHAKE",
+    "BIKE-L1",
+    "HQC-128",
+]
+
+sig_algorithms = [
+    "ML-DSA-44",
+    "Dilithium2",
+    "Falcon-512",
+    "SPHINCS+-SHAKE-256-128f-simple",
+]

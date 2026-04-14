@@ -1,0 +1,10 @@
+CLAUDE.local.md
+build/
+*.o
+*.obj
+*.exe
+*.dll
+*.so
+*.a
+*.lib
+.claude/

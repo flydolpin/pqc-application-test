@@ -1,0 +1,17 @@
+# NIST Security Level 5 (~256-bit equivalent) algorithm combinations
+
+kem_algorithms = [
+    "ML-KEM-1024",
+    "Kyber1024",
+    "p521_kyber1024",
+    "FrodoKEM-1344-SHAKE",
+    "BIKE-L5",
+    "HQC-256",
+]
+
+sig_algorithms = [
+    "ML-DSA-87",
+    "Dilithium5",
+    "Falcon-1024",
+    "SPHINCS+-SHAKE-256-256f-simple",
+]

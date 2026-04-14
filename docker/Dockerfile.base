@@ -1,0 +1,80 @@
+# Stage 1: Build liboqs + OpenSSL + oqs-provider
+FROM ubuntu:24.04 AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y \
+    build-essential cmake git ninja-build python3 \
+    libssl-dev pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build liboqs
+WORKDIR /opt
+RUN git clone --depth 1 --branch main https://github.com/open-quantum-safe/liboqs.git \
+    && cd liboqs \
+    && mkdir build && cd build \
+    && cmake -GNinja .. \
+        -DCMAKE_INSTALL_PREFIX=/opt/oqs \
+        -DOQS_ALGS_ENABLED=All \
+        -DBUILD_SHARED_LIBS=ON \
+    && ninja -j$(nproc) \
+    && ninja install
+
+# Build oqs-provider for OpenSSL 3
+WORKDIR /opt
+RUN git clone --depth 1 --branch main https://github.com/open-quantum-safe/oqs-provider.git \
+    && cd oqs-provider \
+    && mkdir build && cd build \
+    && cmake -GNinja .. \
+        -DCMAKE_INSTALL_PREFIX=/opt/oqs \
+        -Dliboqs_DIR=/opt/oqs/lib/cmake/liboqs \
+    && ninja -j$(nproc) \
+    && ninja install
+
+# Stage 2: Build the benchmark framework
+FROM builder AS framework
+
+WORKDIR /opt/pqc
+
+# Copy project source
+COPY CMakeLists.txt .
+COPY include/ include/
+COPY src/ src/
+COPY tools/ tools/
+COPY tests/ tests/
+
+# Build
+RUN mkdir build && cd build \
+    && cmake .. \
+        -DCMAKE_PREFIX_PATH=/opt/oqs \
+        -DOpenSSL_ROOT_DIR=/usr \
+        -DPQC_ENABLE_TESTS=ON \
+    && make -j$(nproc)
+
+# Stage 3: Runtime image
+FROM ubuntu:24.04 AS runtime
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y \
+    libssl3 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy liboqs shared libraries
+COPY --from=builder /opt/oqs/lib/ /opt/oqs/lib/
+# oqs-provider installs to system path, not /opt/oqs
+COPY --from=builder /usr/lib/x86_64-linux-gnu/ossl-modules/ /opt/oqs/lib/ossl-modules/
+
+# Copy built binaries
+COPY --from=framework /opt/pqc/build/tools/pqc_list_algs /usr/local/bin/
+COPY --from=framework /opt/pqc/build/tools/pqc_bench_tls /usr/local/bin/
+COPY --from=framework /opt/pqc/build/tools/pqc_bench_algo /usr/local/bin/
+COPY --from=framework /opt/pqc/build/tools/pqc_tls_server /usr/local/bin/
+COPY --from=framework /opt/pqc/build/src/libpqc_framework.a /opt/pqc/lib/
+
+# Copy configs
+COPY configs/ /opt/pqc/configs/
+COPY docker/scripts/ /opt/pqc/scripts/
+
+ENV LD_LIBRARY_PATH=/opt/oqs/lib
+ENV OPENSSL_MODULES=/opt/oqs/lib/ossl-modules
+
+WORKDIR /opt/pqc

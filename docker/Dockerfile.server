@@ -1,0 +1,8 @@
+# PQC TLS Server - uses OQS nginx image for real-network testing
+FROM openquantumsafe/nginx:latest
+
+# Copy server configuration and certificate generation scripts
+COPY docker/scripts/gen_certs.sh /opt/scripts/gen_certs.sh
+RUN chmod +x /opt/scripts/gen_certs.sh
+
+WORKDIR /opt
