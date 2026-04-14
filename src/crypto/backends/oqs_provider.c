@@ -48,6 +48,7 @@ pqc_status_t pqc_oqs_provider_load(const char *provider_path) {
         fprintf(stderr, "Warning: Failed to load oqsprovider (TLS benchmark will use classical algorithms only)\n");
         ERR_print_errors_fp(stderr);
         /* Not fatal - can still work with classical algorithms */
+        return PQC_NOT_SUPPORTED;
     }
 
     return PQC_OK;
@@ -59,7 +60,7 @@ pqc_status_t pqc_oqs_provider_load(const char *provider_path) {
  * Returns NULL on failure.
  */
 SSL_CTX *pqc_create_ssl_ctx(int is_server, const char *provider_path) {
-    pqc_oqs_provider_load(provider_path);
+    int oqs_loaded = (pqc_oqs_provider_load(provider_path) == PQC_OK);
 
     const SSL_METHOD *method = is_server ? TLS_server_method() : TLS_client_method();
     SSL_CTX *ctx = SSL_CTX_new(method);
@@ -71,6 +72,28 @@ SSL_CTX *pqc_create_ssl_ctx(int is_server, const char *provider_path) {
     /* Force TLS 1.3 */
     SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION);
     SSL_CTX_set_max_proto_version(ctx, TLS1_3_VERSION);
+
+    /* Lower security level to allow PQC certificates.
+     * PQC algorithms like ML-DSA are not yet in OpenSSL's
+     * default security profile, so security level 0 is needed. */
+    SSL_CTX_set_security_level(ctx, 0);
+
+    /*
+     * When oqs-provider is loaded, set a default supported groups list
+     * that includes both classic and PQC algorithms. This ensures the
+     * server can accept PQC key exchanges even without --kem flag.
+     */
+    if (is_server && oqs_loaded) {
+        const char *default_groups =
+            "x25519:X25519MLKEM768:SecP256r1MLKEM768"
+            ":mlkem768:mlkem512:mlkem1024"
+            ":x25519_mlkem512:x448_mlkem768"
+            ":secp256r1:secp384r1:secp521r1";
+        if (SSL_CTX_set1_curves_list(ctx, default_groups) != 1) {
+            fprintf(stderr, "Warning: Failed to set default PQC groups\n");
+            ERR_print_errors_fp(stderr);
+        }
+    }
 
     return ctx;
 }

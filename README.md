@@ -11,7 +11,7 @@
 ## 功能特性
 
 - **模块化算法架构** — 签名算法和密钥交换算法可独立替换，无需修改 TLS 或 benchmark 代码
-- **TLS 1.3 Benchmark** — 测量使用 PQC 算法的 TLS 1.3 握手性能（开发中）
+- **TLS 1.3 Benchmark** — 测量使用 PQC 算法的 TLS 1.3 握手性能
 - **HTTP/3 (QUIC) Benchmark** — 测量 QUIC 协议下的 PQC 性能（Phase 2）
 - **算法微基准** — 纯算法级别的 keygen/sign/verify/encaps/decaps 性能测试
 - **多格式输出** — JSON、CSV、Console 三种结果输出格式
@@ -172,24 +172,55 @@ docker run --rm pqc-benchmark pqc_bench_algo sig ML-DSA-65 1000
 docker run --rm pqc-benchmark pqc_bench_algo kem FrodoKEM-976-SHAKE 1000
 ```
 
-### 4. 端到端 TLS Benchmark（开发中）
+### 4. TLS 1.3 端到端 Benchmark
 
 ```bash
-# 使用 Docker Compose 启动 server + client
+# 使用 Docker Compose 一键运行（Classic + ML-KEM-512/768/1024）
 cd docker
 docker compose -f docker-compose.tls.yml up
 
-# 或直接运行 benchmark 客户端
-docker run --rm pqc-benchmark pqc_bench_tls \
-  --kem ML-KEM-768 --sig ML-DSA-65 \
-  --host pqc-server --port 4433 \
-  --iterations 100 --format json \
-  --output /opt/pqc/results/results.json
+# 或手动运行 server + client
+docker run --rm pqc-benchmark bash -c '
+  # 生成证书
+  /opt/pqc/scripts/gen_certs.sh --out-dir /tmp/certs &&
+  # 启动服务端
+  pqc_tls_server --port 4433 --cert /tmp/certs/server.crt --key /tmp/certs/server.key --max-conn 50 &>/dev/null &
+  sleep 1 &&
+  # 运行 benchmark
+  pqc_bench_tls --kem mlkem768 --host 127.0.0.1 --port 4433 --iterations 20 --no-verify --format csv
+'
 ```
+
+#### Benchmark 结果（Docker 容器内，RSA 签名证书）
+
+| KEM 算法 | 迭代次数 | 成功率 | 平均握手时间 | 发送字节 | 接收字节 |
+|----------|---------|--------|-------------|---------|---------|
+| Classic (X25519) | 20 | 100% | 0.85 ms | 290 | 1364 |
+| ML-KEM-512 | 20 | 100% | 0.84 ms | 1032 | 2100 |
+| ML-KEM-768 | 20 | 100% | 0.82 ms | 1416 | 2420 |
+| ML-KEM-1024 | 5 | 100% | 0.93 ms | 1800 | 2900 |
+
+> 测试环境：Docker Desktop on Windows 11, Ubuntu 24.04 容器, liboqs 0.15.0, oqs-provider 0.12.0-dev
 
 ---
 
 ## 工具使用手册
+
+### `pqc_tls_server` — TLS 1.3 测试服务端
+
+```bash
+pqc_tls_server --port 4433 --cert server.crt --key server.key [选项]
+
+# 选项
+--port <num>          监听端口 (默认 4433)
+--cert <path>         服务器证书 (PEM)
+--key <path>          服务器私钥 (PEM)
+--kem <alg>           限制只使用指定 KEM 算法 (默认接受所有)
+--sig <alg>           限制只使用指定签名算法
+--ca-cert <path>      CA 证书 (客户端验证)
+--max-conn <num>      最大连接数后退出 (默认无限)
+--provider <path>     oqs-provider 模块目录
+```
 
 ### `pqc_list_algs` — 列出可用算法
 
@@ -417,10 +448,19 @@ make -j$(nproc)
 | 算法微基准工具 | 已完成 |
 | TOML 配置解析 | 基础完成 |
 | Docker 集成 | 已完成 |
-| TLS 客户端/服务端 (OpenSSL) | 开发中 |
-| 握手阶段追踪 (msg_callback) | 开发中 |
-| 端到端 TLS Benchmark | 开发中 |
+| TLS 客户端/服务端 (OpenSSL) | 已完成 |
+| 握手阶段追踪 (msg_callback) | 已完成 |
+| PQC KEM TLS Benchmark (ML-KEM-512/768/1024) | 已完成 |
+| PQC 签名证书生成 (ML-DSA-44/65/87) | 已完成 |
+| PQC 签名证书 TLS 认证 | 受限于 OpenSSL 3.0 (见下) |
+| 网络模拟 (tc netem) | 已完成 |
 | QUIC/HTTP3 支持 | Phase 2 |
+
+### 已知限制
+
+- **PQC 签名证书 TLS 认证**: OpenSSL 3.0 的 `ssl_set_cert` 仅支持 RSA/EC/Ed25519 证书类型，不识别 PQC (ML-DSA) 证书。PQC 证书可以生成和验证，但无法用于 TLS 服务端认证。需要等待 OpenSSL 或 oqs-provider 的进一步支持。
+- **ML-KEM-1024 多次迭代**: 在同一进程中连续运行 >7 次 ML-KEM-1024 握手可能导致 segfault（oqs-provider 内存管理问题）。
+- **Docker Desktop 环境变量**: 在 Windows Docker Desktop 中，`docker compose` 的 `environment` 传递 `OPENSSL_MODULES` 会被错误转换为 Windows 路径。使用 Dockerfile `ENV` 指令替代。
 
 ---
 
