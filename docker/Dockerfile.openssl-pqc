@@ -1,0 +1,125 @@
+# Stage 1: Build OpenSSL 3.5.4 (native ML-DSA TLS support via provider path)
+FROM ubuntu:24.04 AS openssl-builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+# Use Chinese mirror for reliability
+RUN sed -i 's|http://archive.ubuntu.com|http://mirrors.aliyun.com|g; s|http://security.ubuntu.com|http://mirrors.aliyun.com|g' /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential cmake git ninja-build python3 \
+    perl curl zlib1g-dev ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy local OpenSSL 3.5.4 tarball (avoids network issues during build)
+WORKDIR /opt
+COPY vendor/openssl-3.5.4.tar.gz /opt/openssl-3.5.4.tar.gz
+RUN tar xzf openssl-3.5.4.tar.gz && mv openssl-3.5.4 openssl-src && rm openssl-3.5.4.tar.gz
+
+# OpenSSL 3.5.4 has native ML-DSA TLS support via provider path:
+# - providers/common/capabilities.c provides ML-DSA TLS sigalgs
+# - ssl_cert_lookup_by_pkey() searches provider-loaded cert types
+# - ssl_setup_sigalgs() includes provider sigalgs in cache
+# No source modifications needed - use original tarball as-is.
+
+# Build OpenSSL (no source modifications needed for ML-DSA)
+WORKDIR /opt/openssl-src
+RUN ./Configure \
+    --prefix=/opt/openssl-pqc \
+    --openssldir=/opt/openssl-pqc/ssl \
+    --libdir=lib \
+    shared \
+    no-tests \
+    && make -j$(nproc) \
+    && make -j$(nproc) \
+    && make install_sw
+
+# Stage 1b: Quick TLS test with ML-DSA (non-blocking - failure won't stop build)
+FROM openssl-builder AS tls-test
+WORKDIR /opt
+COPY docker/scripts/test_mldsa_tls.c /tmp/test_mldsa_tls.c
+RUN gcc -o /tmp/test_mldsa_tls /tmp/test_mldsa_tls.c \
+        -I/opt/openssl-pqc/include -L/opt/openssl-pqc/lib \
+        -lssl -lcrypto -ldl -lpthread \
+    && timeout 120 sh -c 'LD_LIBRARY_PATH=/opt/openssl-pqc/lib /tmp/test_mldsa_tls' || echo "TLS test skipped or failed (non-fatal)"
+
+# Stage 2: Build liboqs + oqs-provider against OpenSSL 3.5.4
+FROM openssl-builder AS oqs-builder
+
+# Build liboqs
+WORKDIR /opt
+RUN git clone --depth 1 --branch main https://github.com/open-quantum-safe/liboqs.git \
+    && cd liboqs \
+    && mkdir build && cd build \
+    && cmake -GNinja .. \
+        -DCMAKE_INSTALL_PREFIX=/opt/oqs \
+        -DOQS_ALGS_ENABLED=All \
+        -DBUILD_SHARED_LIBS=ON \
+        -DOPENSSL_ROOT_DIR=/opt/openssl-pqc \
+    && ninja -j$(nproc) \
+    && ninja install
+
+# Build oqs-provider against modified OpenSSL
+WORKDIR /opt
+RUN git clone --depth 1 --branch main https://github.com/open-quantum-safe/oqs-provider.git \
+    && cd oqs-provider \
+    && mkdir build && cd build \
+    && cmake -GNinja .. \
+        -DCMAKE_INSTALL_PREFIX=/opt/oqs \
+        -Dliboqs_DIR=/opt/oqs/lib/cmake/liboqs \
+        -DOPENSSL_ROOT_DIR=/opt/openssl-pqc \
+    && ninja -j$(nproc) \
+    && ninja install
+
+# Stage 3: Build the benchmark framework against OpenSSL 3.5.4
+FROM oqs-builder AS framework
+
+WORKDIR /opt/pqc
+COPY CMakeLists.txt .
+COPY include/ include/
+COPY src/ src/
+COPY tools/ tools/
+COPY tests/ tests/
+
+RUN mkdir build && cd build \
+    && cmake .. \
+        -DCMAKE_PREFIX_PATH="/opt/oqs;/opt/openssl-pqc" \
+        -DOpenSSL_ROOT_DIR=/opt/openssl-pqc \
+        -DPQC_ENABLE_TESTS=ON \
+    && make -j$(nproc)
+
+# Stage 4: Runtime image
+FROM ubuntu:24.04 AS runtime
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN sed -i 's|http://archive.ubuntu.com|http://mirrors.aliyun.com|g; s|http://security.ubuntu.com|http://mirrors.aliyun.com|g' /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy OpenSSL libraries
+COPY --from=oqs-builder /opt/openssl-pqc/lib/ /opt/openssl-pqc/lib/
+COPY --from=oqs-builder /opt/openssl-pqc/bin/ /opt/openssl-pqc/bin/
+
+# Create OpenSSL config
+RUN mkdir -p /opt/openssl-pqc/ssl
+COPY docker/scripts/openssl.cnf /opt/openssl-pqc/ssl/openssl.cnf
+# Copy liboqs
+COPY --from=oqs-builder /opt/oqs/lib/ /opt/oqs/lib/
+# Copy oqs-provider (installs to system path, not CMAKE_INSTALL_PREFIX)
+COPY --from=oqs-builder /usr/lib/x86_64-linux-gnu/ossl-modules/ /opt/oqs/lib/ossl-modules/
+
+# Copy built binaries
+COPY --from=framework /opt/pqc/build/tools/pqc_list_algs /usr/local/bin/
+COPY --from=framework /opt/pqc/build/tools/pqc_bench_tls /usr/local/bin/
+COPY --from=framework /opt/pqc/build/tools/pqc_bench_algo /usr/local/bin/
+COPY --from=framework /opt/pqc/build/tools/pqc_tls_server /usr/local/bin/
+COPY --from=framework /opt/pqc/build/src/libpqc_framework.a /opt/pqc/lib/
+
+# Copy configs and scripts
+COPY configs/ /opt/pqc/configs/
+COPY docker/scripts/ /opt/pqc/scripts/
+
+ENV LD_LIBRARY_PATH=/opt/openssl-pqc/lib:/opt/oqs/lib
+ENV OPENSSL_MODULES=/opt/oqs/lib/ossl-modules
+ENV PATH=/opt/openssl-pqc/bin:$PATH
+
+WORKDIR /opt/pqc

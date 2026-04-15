@@ -8,3 +8,13 @@ build/
 *.a
 *.lib
 .claude/
+
+# OpenSSL source and binaries
+vendor/openssl-3.5.4/
+vendor/openssl-3.5.4.tar.gz
+vendor/openssl-pqc/
+vendor/liboqs/
+vendor/oqs/
+
+# Docker patches (legacy, no longer needed)
+docker/patches/

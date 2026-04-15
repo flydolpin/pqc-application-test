@@ -1,0 +1,8 @@
+vendor/liboqs/
+vendor/oqs/
+vendor/openssl-pqc/
+build/
+.git/
+.claude/
+*.o
+*.a
